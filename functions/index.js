@@ -1,16 +1,27 @@
-/* ================= FuQorAI Cloud Functions ================= */
+/* =====================================================================
+   FuQorAI — Cloud Function "api"
+   Route'lar:
+     POST   /api/requests            — murojaat yaratish (kategoriya avtomatik)
+     GET    /api/requests?limit=N    — ro'yxat
+     PATCH  /api/requests/:id        — status/javob (admin token talab)
+     POST   /api/chat                — AI javob (Gemini, OpenAI emas)
+     POST   /api/telegram/webhook    — Telegram orqali murojaat qabul qilish
+   ===================================================================== */
 const { onRequest } = require("firebase-functions/v2/https");
-const { setGlobalOptions } = require("firebase-functions/v2/options");
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { setGlobalOptions } = require("firebase-functions/v2");
+const { HttpsError } = require("firebase-functions/v2/https");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { getAuth } = require("firebase-admin/auth");
 const logger = require("firebase-functions/logger");
 
-initializeApp();
 setGlobalOptions({ region: "europe-west1", maxInstances: 10 });
+initializeApp();
 const db = getFirestore();
 const auth = getAuth();
+
+/* ---------------- helpers ---------------- */
+function esc(s){ return String(s==null?"":s); }
 
 async function requireAdmin(req) {
   const h = req.headers.authorization || "";
@@ -21,182 +32,267 @@ async function requireAdmin(req) {
   return dec;
 }
 
-/* ---------------- helpers ---------------- */
-const CATS = {
-  "Kommunal xizmatlar": { dep: "Kommunal xizmatlar boshqarmasi", kw: ["suv","elektr","gaz","kanalizatsiya","issiq","hisoblagich","chiqindi","tozib"] },
-  "Ijtimoiy himoya":    { dep: "Ijtimoiy himoya bo‘limi", kw: ["nafaqa","subsidiya","yordam","oil","reabilitatsiya","iqtizodiy","moddiy yordam"] },
-  "Sog‘liqni saqlash":  { dep: "Sog‘liqni saqlash boshqarmasi", kw: ["shifokor","shifoxona","dorixona","dori","tibbiy","shoshilinch","poliklinika","bemor","kursatkaz"] },
-  "Ta'lim":             { dep: "Ta'lim boshqarmasi", kw: ["maktab","o‘qituvchi","bog‘cha","stipendiya","ovqatlanish","o‘quv","talaba","bolalar"] },
-  "Transport":          { dep: "Transport va yo‘l xo‘jaligi bo‘limi", kw: ["avtobus","yo‘l","transport","tosh","ko‘cha","yorug‘lik","parkovka","tarmoq","mashina"] },
-  "Huquqiy masalalar":  { dep: "Yuridik bo‘lim", kw: ["sud","qarz","huquq","notarius","aliment","shartnoma","ijro","hujjat","mulk","fuqarolik"] },
-  "Hokimlik faoliyati": { dep: "Hokimlik apparati", kw: ["hokim","mahalla","byudjet","qaror","tadbirkor","yig‘ilish","hokimiyat","yuzma-yuz"] },
-  "Ekologiya":          { dep: "Ekologiya va atrof-muhit bo‘limi", kw: ["zavod","iflos","daryo","chigindi","daraxt","ekologiya","havо","suv ombori","poligon"] },
-  "Boshqa":             { dep: "Umumiy qabulxona", kw: [] }
-};
+/* ---------------- AI (OpenAI + Gemini) ---------------- */
+const AI_SYSTEM = `Siz — O'zbekiston fuqaraviy hokimiyati xodimi yordamchisiz.
+Javoblar rasmiy uslubda, qisqa va aniq bo'lsin.
+Har bir javob quyidagi tuzilma bilan:
+1) Qisqa xulosa (1-2 jumla).
+2) Muammo va uning mohiyati.
+3) Raqamlangan amaliy choralar (1-5 ta).
+4) Qaysi bo'limga murojaat qilish kerak.
+5) Taxminiy muddat.
+Faktlarni ixtiyoriy qo'shmang, aniq bo'lmasa "aniqlanadi" deb yozing.`;
 
-function detectCategory(text) {
-  const t = (text || "").toLowerCase();
-  let best = null, bestScore = 0;
-  for (const [cat, cfg] of Object.entries(CATS)) {
-    let score = 0;
-    for (const k of cfg.kw) if (t.includes(k.toLowerCase())) score++;
-    if (score > bestScore) { bestScore = score; best = cat; }
-  }
-  return best || "Boshqa";
-}
-
-function detectPriority(text, cat) {
-  const t = (text || "").toLowerCase();
-  const urgent = ["tez","darhol","xavf","xavfsiz","hayot","tezyordam","shoshilinch","yong‘in","kuchli","tezda","urgent","falak"];
-  const hit = urgent.some(k => t.includes(k));
-  if (hit) return "yuqori";
-  if (t.length < 60) return "past";
-  return "o‘rta";
-}
-
-const SYSTEM_PROMPT = `Siz — FuQorAI, O‘zbekiston fuqoraviy hokimiyatlari uchun sun’iy intellekt yordamchisiz.
-Sizning vazifangiz: fuqaro murojaatlariga aniq, qonuniy va amaliy javob berish.
-Qoidalar:
-1. Har doim o‘zbek tilida, rasmiy va xalqaro savdo qilingan tilda javob bering.
-2. Javob strukturasi: Qisqacha xulosa → Masalaning mohiyati → Zarur choralar (raqamlangan) → Qaysi bo‘limga murojaat (kategoriya bo‘yicha) → Qancha muddat (taxminiy) → Foydalanish uchun telefon/guzara.
-3. Noma'lumni o'ylab topmang. Aniq ma'lumot bo'lmasa, "aniqlanadi" deb yozing.
-4. Hech qachon huquqiy yoki moliyaviy majburiyat yaratuvchi qaror qabul qilmaymang — maslahat bering, yakuniy qaror fuqaro va bo'limda.
-5. Javob 120-250 so'zdan oshmasin.
-6. Xavfsizlik: shaxsiy ma'lumot (telefon, manzil, pasport) so'ralsa, uni chatga yozmasdan, shu masalaga maslahat bering.`;
-
-async function openaiChat(messages, maxTokens = 800) {
+/* OpenAI (chat.completions) */
+async function askOpenAI(message, history) {
   const key = process.env.OPENAI_API_KEY;
-  if (!key) throw new HttpsError("failed-precondition", "OPENAI_API_KEY sozlanmagan");
+  if (!key) throw new HttpsError("failed-precondition", "OPENAI_API_KEY ulanmagan");
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const msgs = [{ role: "system", content: AI_SYSTEM }];
+  (history || []).forEach(m => {
+    if (!m || !m.content) return;
+    const role = m.role === "assistant" ? "assistant" : "user";
+    msgs.push({ role, content: String(m.content).slice(0, 4000) });
+  });
+  msgs.push({ role: "user", content: String(message).slice(0, 4000) });
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.3,
-      max_tokens: maxTokens
-    })
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + key },
+    body: JSON.stringify({ model, messages: msgs, temperature: 0.4, max_tokens: 1200 })
   });
   if (!res.ok) {
     const t = await res.text();
-    logger.error("OpenAI error", { status: res.status, body: t.slice(0, 500) });
-    throw new HttpsError("internal", "AI javob berolmadi, keyinroq urinib ko'ring");
+    logger.error("OpenAI xato", { status: res.status, body: t.slice(0, 500) });
+    throw new HttpsError("internal", "OpenAI javob bermadi: " + res.status);
   }
   const j = await res.json();
-  return j.choices?.[0]?.message?.content || "Javob topilmadi.";
+  const text = j.choices && j.choices[0] && j.choices[0].message
+    ? String(j.choices[0].message.content || "").trim() : "";
+  if (!text) throw new HttpsError("internal", "OpenAI bo'sh javob qaytardi");
+  return text;
 }
 
+/* Gemini (bepul kvota) */
+async function askGemini(message, history) {
+  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!key) throw new HttpsError("failed-precondition", "GEMINI_API_KEY ulanmagan");
+  const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+  const parts = [];
+  (history || []).forEach(m => {
+    if (!m || !m.content) return;
+    parts.push({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: String(m.content).slice(0, 4000) }] });
+  });
+  parts.push({ role: "user", parts: [{ text: String(message).slice(0, 4000) }] });
+  const body = {
+    system_instruction: { parts: [{ text: AI_SYSTEM }] },
+    contents: parts,
+    generationConfig: { temperature: 0.4, maxOutputTokens: 1200 }
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    logger.error("Gemini xato", { status: res.status, body: t.slice(0, 500) });
+    throw new HttpsError("internal", "Gemini javob bermadi");
+  }
+  const j = await res.json();
+  const cand = j.candidates && j.candidates[0];
+  const text = cand && cand.content && cand.content.parts
+    ? cand.content.parts.map(p => p.text || "").join("").trim() : "";
+  if (!text) throw new HttpsError("internal", "AI bo'sh javob qaytardi");
+  return text;
+}
+
+/* AI provider tanlash: avval OpenAI, key yo'q bo'lsa Gemini */
+async function askAI(message, history) {
+  if (process.env.OPENAI_API_KEY) return askOpenAI(message, history);
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return askGemini(message, history);
+  throw new HttpsError("failed-precondition", "AI kaliti ulanmagan");
+}
+
+/* AI kaliti yo'q holat uchun — qoidalar asosidagi qo'lda javob */
+function fallbackReply(message) {
+  const t = String(message || "").toLowerCase();
+  let cat = "Boshqa", dep = "Umumiy qabulxona";
+  for (const [k, v] of Object.entries(CATS)) {
+    if (t.includes(k.toLowerCase())) { cat = k; dep = DEP_OF[k]; break; }
+  }
+  return `1) Xulosa: Sizning murojaatingiz "${cat}" bo'limiga tegishli va "${dep}" tomonidan ko'rib chiqiladi.\n\n2) Muammo: Murojaatingiz qabul qilindi. Batafsil holat va hujjatlar xodim tomonidan tekshiriladi.\n\n3) Choralar:\n1) Murojaat ro'yxatga olindi.\n2) Mas'ul xodim belgilandi.\n3) Siz bilan telefon orqali bog'lanish uchun murojaat raqamini saqlang.\n4) Zarur hujjatlar (ariza, hujjat nusxasi) bo'limga yetkaziladi.\n\n4) Bo'lim: ${dep}\n\n5) Muddat: 3-7 ish kuni ichida.`;
+}
+
+/* ---------------- kategoriyalar ---------------- */
+const CATS = {
+  "Kommunal xizmatlar": { dep: "Kommunal xizmatlar boshqarmasi", kw: ["kommunal","suv","kanalizatsiya","chiqindi","garbage","elektr","gaz","isitish","uyni","jamoat","tozalash","chiqindilar"] },
+  "Ijtimoiy himoya": { dep: "Ijtimoiy himoya bo'limi", kw: ["ijtimoiy","yordam","nafaka","peshona","mayda","keksa","invalid","nogiron","taminot","yordam berish","subsidiya"] },
+  "Sog'liqni saqlash": { dep: "Sog'liqni saqlash boshqarmasi", kw: ["sog'liq","shifoxona","poliklinika","shifokor","dori","retsept","ambulans","virus","epidemiya","tibbiy","jarohat"] },
+  "Ta'lim": { dep: "Ta'lim boshqarmasi", kw: ["maktab","o'qituvchi","o'quvchi","ta'lim","universitet","kurs","imtihon","diplom","o'qitish"] },
+  "Transport": { dep: "Transport va yo'l xo'jaligi bo'limi", kw: ["transport","avtobus","taksi","avtomobil","yo'l","shossha","trafik","parking","mashina"] },
+  "Huquqiy masalalar": { dep: "Yuridik bo'lim", kw: ["huquq","qonun","shartnoma","qarar","fuqarolik","sud","jazo","huquqiy","maslahat"] },
+  "Hokimlik faoliyati": { dep: "Hokimlik apparati", kw: ["hokim","hokimiyat","rahbar","ariza","qabul","birinchi","fuqarolar","murojaat","javob","jarohat"] },
+  "Ekologiya": { dep: "Ekologiya va atrof-muhit bo'limi", kw: ["ekologiya","atrof","muhit","iflos","zaxira","daraxt","hayvon","chiqindi","shovqin"] }
+};
+const DEP_OF = {};
+Object.keys(CATS).forEach(k => { DEP_OF[k] = CATS[k].dep; });
+DEP_OF["Boshqa"] = "Umumiy qabulxona";
+
+function detectCategory(text, manual) {
+  if (manual && DEP_OF[manual]) return { category: manual, dep: DEP_OF[manual] };
+  const t = String(text || "").toLowerCase();
+  let best = null, bestHits = 0;
+  for (const [cat, cfg] of Object.entries(CATS)) {
+    let hits = 0;
+    cfg.kw.forEach(k => { if (t.includes(k)) hits++; });
+    if (hits > bestHits) { bestHits = hits; best = cat; }
+  }
+  if (!best) return { category: "Boshqa", dep: DEP_OF["Boshqa"] };
+  return { category: best, dep: CATS[best].dep };
+}
+
+function detectPriority(text, category) {
+  const t = String(text || "").toLowerCase();
+  if (/(jaloqatli|falokat|tez|shoshilinch|hayotga|xavf|ishlamay qol|to\x27liq)/.test(t)) return "yuqori";
+  if (category === "Ijtimoiy himoya" || category === "Sog'liqni saqlash") return "o'rta";
+  if (t.length > 320) return "o'rta";
+  return "past";
+}
+
+/* ---------------- Telegram ---------------- */
 async function notifyTelegram(req) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) { logger.warn("Telegram sozlanmagan"); return; }
-  const text = `🔔 *Yangi murojaat* #${req.id}\n` +
-    `📂 Kategoriya: ${req.category}\n` +
-    `🔥 Ustuvorlik: ${req.priority}\n` +
-    `👤 ${req.fio || "nomsiz"}\n\n` +
-    `📝 ${req.text}`;
+  if (!token || !chatId) return;
+  const text = [
+    "🔔 Yangi murojaat",
+    `№: ${req.id}`,
+    `F.I.O: ${req.fio || "nomsiz"}`,
+    `Tel: ${req.phone || "-"}`,
+    `Kategoriya: ${req.category} (${req.dep})`,
+    `Ustuvorlik: ${req.priority}`,
+    `Matn: ${req.text}`
+  ].join("\n");
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
+      body: JSON.stringify({ chat_id: chatId, text })
     });
-  } catch (e) { logger.error("telegram", e); }
+  } catch (e) {
+    logger.error("Telegram xato", e);
+  }
 }
 
-/* ---------------- API (HTTP) ---------------- */
+/* ---------------- main ---------------- */
 exports.api = onRequest(async (req, res) => {
-  const path = req.path.replace(/^\/api\/?/, "") || req.query.path || "";
+  const path = req.path.replace(/^\/+|\/+$/g, "");
+  const method = req.method.toUpperCase();
+
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
+  if (method === "OPTIONS") return res.status(204).send("");
+
   try {
-    if (req.method === "POST" && path === "requests") {
+    /* ---- murojaat yaratish ---- */
+    if (method === "POST" && path === "requests") {
       const b = req.body || {};
-      const text = String(b.text || "").trim();
-      if (text.length < 10) throw new HttpsError("invalid-argument", "Murojaat matni juda qisqa (kamida 10 belgi)");
-      const category = b.category && CATS[b.category] ? b.category : detectCategory(text);
-      const priority = b.priority || detectPriority(text, category);
+      const text = esc(b.text).trim();
+      if (!text) throw new HttpsError("invalid-argument", "Murojaat matni bo'sh");
+      const { category, dep } = detectCategory(text, b.category);
+      const priority = detectPriority(text, category);
       const doc = {
-        id: Date.now(),
-        fio: String(b.fio || "").trim(),
-        phone: String(b.phone || "").trim(),
-        text,
-        category,
-        dep: CATS[category].dep,
-        priority,
+        fio: esc(b.fio).trim().slice(0, 120),
+        phone: esc(b.phone).trim().slice(0, 40),
+        text: text.slice(0, 4000),
+        category, dep, priority,
         status: "yangi",
-        source: b.source || "web",
         answer: "",
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp()
+        source: "web",
+        createdAt: FieldValue.serverTimestamp()
       };
-      await db.collection("requests").doc(String(doc.id)).set(doc);
-      await notifyTelegram(doc);
-      res.json({ ok: true, id: doc.id, category, priority, dep: doc.dep });
-      return;
+      const ref = await db.collection("requests").add(doc);
+      const id = ref.id;
+      await notifyTelegram({ id, ...doc });
+      return res.status(201).json({ ok: true, id, category, dep, priority, status: "yangi" });
     }
 
-    if (req.method === "GET" && (path === "requests" || path === "")) {
-      const limit = Math.min(Number(req.query.limit) || 100, 300);
+    /* ---- ro'yxat ---- */
+    if (method === "GET" && path === "requests") {
+      const limit = Math.min(parseInt((req.query && req.query.limit) || 200, 10) || 200, 500);
       const snap = await db.collection("requests").orderBy("createdAt", "desc").limit(limit).get();
-      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      res.json({ ok: true, items, total: items.length });
-      return;
+      const items = snap.docs.map(d => {
+        const o = d.data();
+        const c = o.createdAt && o.createdAt.toDate ? o.createdAt.toDate() : null;
+        return Object.assign({ id: d.id }, o, { createdAt: c ? c.toISOString() : null });
+      });
+      return res.json({ ok: true, items, count: items.length });
     }
 
-    if (req.method === "PATCH" && path.startsWith("requests/")) {
+    /* ---- yangilash (faqat admin) ---- */
+    if (method === "PATCH" && path.startsWith("requests/")) {
       await requireAdmin(req);
       const id = path.split("/")[1];
       const b = req.body || {};
-      const allowed = {};
-      ["status", "priority", "answer", "dep", "category"].forEach(k => {
-        if (b[k] !== undefined) allowed[k] = b[k];
-      });
-      allowed.updatedAt = FieldValue.serverTimestamp();
-      await db.collection("requests").doc(id).update(allowed);
-      res.json({ ok: true });
-      return;
+      const patch = {};
+      if (b.status) patch.status = b.status;
+      if (b.priority) patch.priority = b.priority;
+      if (b.answer !== undefined) patch.answer = esc(b.answer).slice(0, 4000);
+      if (b.category && DEP_OF[b.category]) { patch.category = b.category; patch.dep = DEP_OF[b.category]; }
+      patch.updatedAt = FieldValue.serverTimestamp();
+      await db.collection("requests").doc(id).update(patch);
+      return res.json({ ok: true, id, patch });
     }
 
-    if (req.method === "POST" && path === "chat") {
+    /* ---- AI chat ---- */
+    if (method === "POST" && path === "chat") {
       const b = req.body || {};
-      const q = String(b.message || "").trim();
-      if (!q) throw new HttpsError("invalid-argument", "Savol bo'sh");
-      const messages = [{ role: "system", content: SYSTEM_PROMPT }];
-      const history = Array.isArray(b.history) ? b.history.slice(-6) : [];
-      history.forEach(h => messages.push({ role: h.role === "user" ? "user" : "assistant", content: h.content }));
-      messages.push({ role: "user", content: q });
-      const reply = await openaiChat(messages);
-      res.json({ ok: true, reply });
-      return;
-    }
-
-    if (req.method === "POST" && path === "telegram/webhook") {
-      const upd = req.body;
-      if (upd && upd.message && upd.message.text) {
-        const doc = {
-          id: Date.now(),
-          fio: upd.message.from ? [upd.message.from.first_name, upd.message.from.last_name].filter(Boolean).join(" ") : "",
-          phone: "",
-          text: upd.message.text,
-          category: detectCategory(upd.message.text),
-          priority: detectPriority(upd.message.text),
-          status: "yangi",
-          source: "telegram",
-          answer: "",
-          createdAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp()
-        };
-        doc.dep = CATS[doc.category].dep;
-        await db.collection("requests").doc(String(doc.id)).set(doc);
-        await notifyTelegram(doc);
+      const message = esc(b.message).trim();
+      if (!message) throw new HttpsError("invalid-argument", "Savol bo'sh");
+      let reply;
+      try {
+        reply = await askAI(message, b.history);
+      } catch (e) {
+        logger.warn("AI fallback'ga o'tildi", e && e.message);
+        reply = fallbackReply(message);
       }
-      res.json({ ok: true });
-      return;
+      return res.json({ ok: true, reply });
     }
 
-    res.status(404).json({ ok: false, error: "topilmadi" });
+    /* ---- Telegram webhook ---- */
+    if (method === "POST" && path === "telegram/webhook") {
+      const b = req.body || {};
+      const msg = b.message || {};
+      const chat = msg.chat || {};
+      const from = msg.from || {};
+      const text = esc(msg.text || "").trim();
+      if (text && chat.id) {
+        const text2 = text.replace(/^\/[a-z_]+/, "").trim();
+        if (text2) {
+          const { category, dep } = detectCategory(text2, "");
+          const priority = detectPriority(text2, category);
+          const ref = await db.collection("requests").add({
+            fio: esc(from.first_name || "") + " " + esc(from.last_name || ""),
+            phone: esc(from.phone_number || ""),
+            text: text2.slice(0, 4000),
+            category, dep, priority,
+            status: "yangi", answer: "",
+            source: "telegram",
+            telegramChatId: String(chat.id),
+            createdAt: FieldValue.serverTimestamp()
+          });
+          await notifyTelegram({ id: ref.id, fio: from.first_name, phone: "", text: text2, category, dep, priority });
+        }
+      }
+      return res.json({ ok: true });
+    }
+
+    return res.status(404).json({ ok: false, error: "Topilmadi: /" + path });
   } catch (e) {
-    logger.error("api error", e);
-    res.status(e.code === "invalid-argument" ? 400 : 500).json({ ok: false, error: e.message || "xato" });
+    logger.error("Xato", { path, method, msg: e && e.message });
+    const code = e && e.code && typeof e.code === "string" && e.code.startsWith("HttpsError") ? 400 : 500;
+    return res.status(code).json({ ok: false, error: (e && e.message) || "Xato yuz berdi" });
   }
 });

@@ -1,11 +1,4 @@
-node_modules/
 .env
-.env.*
-!.env.example
-functions/node_modules/
 functions/.env
 public/firebase-config.js
-*.log
-.DS_Store
-firebase-debug.log
-firestore-debug.log
+functions/node_modules

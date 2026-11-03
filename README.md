@@ -1,69 +1,90 @@
-# FuQorAI — Fuqaraviy murojaatlar uchun sun'iy intellekt yordamchisi
+# FuQorAI — Fuqaraviy murojaatlar uchun AI yordamchisi
 
 O'zbekiston fuqaraviy hokimiyatlari uchun mo'ljallangan veb-ilova:
 fuqaro murojaat qoldiradi, tizim uni avtomatik kategoriyaga ajratadi,
-xodimlar panelida ishlaydi, va Sun'iy intellekt qonuniy yechim taklif qiladi.
+xodimlar panelida ishlaydi, va AI qonuniy yechim taklif qiladi.
+
+## Tezkor ko'rish
+
+| Bo'lim | Vazifasi |
+|---|---|
+| Bosh sahifa | KPI, kategoriya va bo'limlar bo'yicha statistika |
+| Murojaat berish | Forma — kategoriya va ustuvorlik avtomatik aniqlanadi |
+| Murojaatim | Telefon raqam orqali murojaat holatini kuzatish |
+| AI yordam | Chat — Gemini (bepul kvota) |
+| Xodimlar paneli | Login, status o'zgartirish, javob yozish |
 
 ## Tuzilma
 
 ```
-public/          # frontend (statik sayt, Firebase Hosting)
+public/          # frontend (Firebase Hosting)
   index.html
   style.css
   app.js
-  firebase-config.js      # kalitlar shu yerga (gitignore'da)
-functions/       # backend (Cloud Functions, 2nd gen)
-  index.js                # api function: requests / chat / telegram webhook
+  firebase-config.js        # <-- shu faylni to'ldirasiz (gitignore'da)
+  firebase-config.example.js
+functions/       # backend (Cloud Functions 2nd gen, europe-west1)
+  index.js        # api: requests / chat / telegram webhook
   .env.example
-firestore.rules  # access rules
+scripts/
+  set-admin.js    # admin foydalanuvchi + 'admin: true' claim
+  deploy.sh       # to'liq deploy scripti
+firestore.rules
+firestore.indexes.json
 firebase.json
+.firebaserc      # loyiha: murojaat-ai
 ```
 
-## Texnologiyalar
+## Narxi
 
-- Firebase Hosting + Firestore + Authentication (Email/Password)
-- Cloud Functions (Node.js 20, europe-west1) — API va Telegram bildirishnoma
-- OpenAI `gpt-4o-mini` — AI javoblar
+Firebase Hosting, Firestore, Authentication, Cloud Functions (bepul kvota ichida)
+va Gemini API — **barchasi bepul**. Faqat Firebase'ga Blaze rejani yoqish kerak
+(karta bog'lanadi, lekin $200/oy bepul kvota bor; konsolda ogohlantirish qo'ying).
 
-## O'rnatish
+## O'rnatish — 5 qadam
 
 ### 1. Firebase loyihasi
 
-1. https://console.firebase.google.com -> yangi loyiha
-2. Firestore -> Database yarating (test mode)
-3. Authentication -> Sign-in method -> Email/Password yoqing
-4. Project settings -> Your apps -> Web app -> config obyektini ko'chiring
+Firebase konsoli: [console.firebase.google.com](https://console.firebase.google.com)
+Loyiha ID: **murojaat-ai**
 
-### 2. Lokal sozlama
+- **Firestore Database** → Create database → Production mode → `europe-west1`
+- **Authentication** → Sign-in method → **Email/Password** → Enable
+- **Blaze rejani yoqing** (Billing → "Upgrade") — Functions uchun shart
+
+### 2. Firebase konfiguratsiyasi (frontend uchun)
+
+Project settings → General → pastga scroll → **Your apps** → **</>** (Web) →
+"Add to Firebase App" → konfiguratsiya ko'rinadi.
 
 ```bash
 cp public/firebase-config.example.js public/firebase-config.js
-# firebase-config.js ichiga Firebase config'ni yozing
-cp functions/.env.example functions/.env
-# functions/.env ichiga OPENAI_API_KEY va TELEGRAM_* kalitlarini yozing
+# firebase-config.js ichidagi 6 ta qiymatni konfiguratsiyadan ko'chiring
 ```
 
-### 3. Admin hisobi va admin claim
+`firebase-config.js` `.gitignore` da — repo'ga tushmaydi.
+
+### 3. AI kaliti (bepul)
+
+1. [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) → "Create API key"
+2. Kalitni `.env` faylga qo'ying:
 
 ```bash
-cd functions
-npm install
-node ../scripts/set-admin.js admin@example.com parol
+cp functions/.env.example functions/.env
+# GEMINI_API_KEY=AIza... ni yozing
 ```
 
-Skript foydalanuvchini Auth'ga yaratadi va `admin: true` custom claim qo'yadi.
-(Firestore'da `admins/{uid}` hujjatini ham yaratadi.)
+`.env` faqat serverda qoladi, hech qachon repo'ga tushmaydi.
 
-### 4. Telegram bot (ixtiyoriy, tavsiya etiladi)
+### 4. Telegram bot (ixtiyoriy, lekin tavsiya etiladi)
 
-1. @BotFather -> /newbot
-2. Yaratilgan tokenni `functions/.env` ga `TELEGRAM_BOT_TOKEN` sifatida yozing
-3. Yangi murojaat xabarlari shu chatga yuboriladi: `TELEGRAM_CHAT_ID` (admin kanal/group id)
-4. Bot orqali ham murojaat qabul qilish uchun webhook:
+1. @BotFather → `/newbot` → token oling
+2. `functions/.env` ga `TELEGRAM_BOT_TOKEN` va `TELEGRAM_CHAT_ID` (admin kanal ID) yozing
+3. Bot orqali ham murojaat qabul qilish:
 
 ```bash
 curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
-  -d "url=https://europe-west1-<project>.cloudfunctions.net/api/api/telegram/webhook"
+  -d "url=https://europe-west1-murojaat-ai.cloudfunctions.net/api/api/telegram/webhook"
 ```
 
 ### 5. Deploy
@@ -71,30 +92,34 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
 ```bash
 npm install -g firebase-tools
 firebase login
-firebase use <project-id>
-cd functions && npm install && cd ..
-firebase deploy --only functions,firestore,hosting
+bash scripts/deploy.sh
 ```
 
-### 6. Lokal ishga tushirish
+Yoki qo'lda:
 
 ```bash
-firebase emulators:start
+cd functions && npm install && cd ..
+firebase deploy --only functions,firestore,hosting --project murojaat-ai
+node scripts/set-admin.js admin@example.com parol
 ```
+
+Sayt: **https://murojaat-ai.web.app**
 
 ## API
 
 | Method | Endpoint | Vazifa |
 |---|---|---|
 | POST | `/api/requests` | Yangi murojaat (kategoriya + ustuvorlik avtomatik) |
-| GET  | `/api/requests?limit=200` | Murojaatlar ro'yxati |
+| GET | `/api/requests?limit=200` | Murojaatlar ro'yxati |
 | PATCH | `/api/requests/:id` | Status/javob o'zgartirish (admin token talab) |
-| POST | `/api/chat` | AI javob (gpt-4o-mini) |
+| POST | `/api/chat` | AI javob (Gemini 2.0 Flash) |
 | POST | `/api/telegram/webhook` | Telegram orqali murojaat qabul qilish |
+
+AI kaliti yo'q bo'lsa ham chat ishlaydi — qoidalar asosidagi qo'lda javob qaytaradi.
 
 ## Xavfsizlik
 
-- `.env` va `public/firebase-config.js` `.gitignore` da — repo'ga tushmaydi
-- OpenAI kaliti faqat serverda; frontend hech qachon kalit olmaydi
+- `.env` va `public/firebase-config.js` `.gitignore` da
+- AI kaliti faqat serverda; frontend hech qachon kalit olmaydi
 - `PATCH` endpoint `admin` custom claim'ni tekshiradi
-- `requests` yozish ochiq (fuqaro murojaati), o'qish ochiq, o'zgartirish faqat admin
+- `requests` yozish ochiq (fuqaro murojaati), o'zgartirish faqat admin
