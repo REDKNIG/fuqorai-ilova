@@ -107,11 +107,58 @@ async function askGemini(message, history) {
   return text;
 }
 
+/* OpenRouter (bepul :free modellar ham bor) */
+async function askOpenRouter(message, history) {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new HttpsError("failed-precondition", "OPENROUTER_API_KEY ulanmagan");
+  const model = process.env.OPENROUTER_MODEL || "google/gemma-4-26b-a4b-it:free";
+  const msgs = [{ role: "system", content: AI_SYSTEM }];
+  (history || []).forEach(m => {
+    if (!m || !m.content) return;
+    const role = m.role === "assistant" ? "assistant" : "user";
+    msgs.push({ role, content: String(m.content).slice(0, 4000) });
+  });
+  msgs.push({ role: "user", content: String(message).slice(0, 4000) });
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + key,
+      "HTTP-Referer": process.env.APP_URL || "https://murojaat-ai.web.app",
+      "X-Title": "FuQorAI"
+    },
+    body: JSON.stringify({ model, messages: msgs, temperature: 0.4, max_tokens: 1200 })
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    logger.error("OpenRouter xato", { status: res.status, body: t.slice(0, 500) });
+    throw new HttpsError("internal", "OpenRouter javob bermadi: " + res.status);
+  }
+  const j = await res.json();
+  const text = j.choices && j.choices[0] && j.choices[0].message
+    ? String(j.choices[0].message.content || "").trim() : "";
+  if (!text) throw new HttpsError("internal", "OpenRouter bo'sh javob qaytardi");
+  return text;
+}
+
 /* AI provider tanlash: avval OpenAI, key yo'q bo'lsa Gemini */
 async function askAI(message, history) {
-  if (process.env.OPENAI_API_KEY) return askOpenAI(message, history);
-  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return askGemini(message, history);
-  throw new HttpsError("failed-precondition", "AI kaliti ulanmagan");
+  const providers = [];
+  if (process.env.OPENAI_API_KEY) providers.push(["OpenAI", askOpenAI]);
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) providers.push(["Gemini", askGemini]);
+  if (process.env.OPENROUTER_API_KEY) providers.push(["OpenRouter", askOpenRouter]);
+  if (!providers.length) throw new HttpsError("failed-precondition", "AI kaliti ulanmagan");
+
+  let lastErr = null;
+  for (const [name, fn] of providers) {
+    try {
+      return await fn(message, history);
+    } catch (e) {
+      logger.warn(name + " ishlamadi, keyingisiga o'tilyapti", { err: String(e && e.message) });
+      lastErr = e;
+    }
+  }
+  throw lastErr || new HttpsError("internal", "AI javob bermadi");
 }
 
 /* AI kaliti yo'q holat uchun — qoidalar asosidagi qo'lda javob */
