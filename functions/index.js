@@ -232,6 +232,42 @@ async function notifyTelegram(req) {
   }
 }
 
+/* ---------------- Telegram: foydalanuvchiga javob ---------------- */
+async function tgSend(chatId, text, keyboard) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: String(text).slice(0, 4000),
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        reply_markup: keyboard || undefined
+      })
+    });
+    if (!r.ok) {
+      logger.error("tgSend xato", { status: r.status, body: (await r.text()).slice(0, 300) });
+      return null;
+    }
+    return await r.json();
+  } catch (e) {
+    logger.error("tgSend exception", String(e && e.message));
+    return null;
+  }
+}
+
+const TG_HELP = `<b>FuQorAI — fuqaraviy murojaat yordamchisi</b>
+
+Meningizga murojaatingizni oddiy tilda yozing (masalan: "uyimda suv yo'q" yoki "maoshimni o'zgartirish kerak"). Men:
+• kategoriyani aniqlayman,
+• mas'ul bo-limni ko'rsataman,
+• amaliy choralar ro'yxatini beraman.
+
+Yordam: /help — bu yordam, /start — boshlash.`;
+
 /* ---------------- main ---------------- */
 exports.api = onRequest(async (req, res) => {
   let path = req.path.replace(/^\/+|\/+$/g, "");
@@ -316,25 +352,56 @@ exports.api = onRequest(async (req, res) => {
       const msg = b.message || {};
       const chat = msg.chat || {};
       const from = msg.from || {};
-      const text = esc(msg.text || "").trim();
-      if (text && chat.id) {
-        const text2 = text.replace(/^\/[a-z_]+/, "").trim();
-        if (text2) {
-          const { category, dep } = detectCategory(text2, "");
-          const priority = detectPriority(text2, category);
-          const ref = await db.collection("requests").add({
-            fio: esc(from.first_name || "") + " " + esc(from.last_name || ""),
-            phone: esc(from.phone_number || ""),
-            text: text2.slice(0, 4000),
-            category, dep, priority,
-            status: "yangi", answer: "",
-            source: "telegram",
-            telegramChatId: String(chat.id),
-            createdAt: FieldValue.serverTimestamp()
-          });
-          await notifyTelegram({ id: ref.id, fio: from.first_name, phone: "", text: text2, category, dep, priority });
-        }
+      const raw = esc(msg.text || "").trim();
+      const chatId = chat.id;
+
+      if (!chatId || !raw) return res.json({ ok: true });
+
+      const cmd = raw.split(/\s+/)[0].toLowerCase();
+      if (cmd === "/start") {
+        await tgSend(chatId, TG_HELP);
+        return res.json({ ok: true });
       }
+      if (cmd === "/help") {
+        await tgSend(chatId, TG_HELP);
+        return res.json({ ok: true });
+      }
+
+      const text2 = raw.replace(/^\/[a-z_]+/i, "").trim();
+      if (!text2) {
+        await tgSend(chatId, TG_HELP);
+        return res.json({ ok: true });
+      }
+
+      const { category, dep } = detectCategory(text2, "");
+      const priority = detectPriority(text2, category);
+
+      let reply;
+      try {
+        reply = await askAI(text2, []);
+      } catch (e) {
+        logger.warn("Telegram: AI fallback", String(e && e.message));
+        reply = fallbackReply(text2);
+      }
+
+      const fio = esc(from.first_name || "") + " " + esc(from.last_name || "");
+      const ref = await db.collection("requests").add({
+        fio: fio.trim(),
+        phone: esc(from.phone_number || ""),
+        text: text2.slice(0, 4000),
+        category, dep, priority,
+        status: "yangi", answer: "",
+        source: "telegram",
+        telegramChatId: String(chatId),
+        createdAt: FieldValue.serverTimestamp()
+      });
+
+      await notifyTelegram({ id: ref.id, fio: fio.trim(), phone: "", text: text2, category, dep, priority });
+
+      const body = reply
+        ? reply
+        : `Murojaatingiz qabul qilindi. Kategoriya: ${category}. Bo'lim: ${dep}.`;
+      await tgSend(chatId, `<b>№ ${ref.id}</b> — ${category} (${dep})\n\n${body}`);
       return res.json({ ok: true });
     }
 
