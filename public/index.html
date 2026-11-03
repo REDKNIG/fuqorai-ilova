@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FuQorAI — Fuqoraviy murojaatlar va sun'iy intellekt yordami</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="logo"><span class="mark">AI</span> FuQorAI</div>
+    <nav>
+      <button class="tabbtn active" data-view="home">Bosh sahifa</button>
+      <button class="tabbtn" data-view="submit">Murojaat berish</button>
+      <button class="tabbtn" data-view="track">Murojaatim</button>
+      <button class="tabbtn" data-view="chat">AI yordam</button>
+      <button class="tabbtn" data-view="admin">Xodimlar paneli</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- HOME -->
+  <section id="view-home" class="view active">
+    <div class="hero">
+      <h1>Fuqaraviy murojaatlarga sun'iy intellekt yordami</h1>
+      <p>Murojaatingizni yozing — tizim uni avtomatik kategoriyaga ajratadi, ustuvorlik beradi va Sun'iy intellekt sizga qadamli yechim taklif qiladi.</p>
+      <div class="team">
+        <span class="chip">9 bo'lim</span><span class="chip">24/7 qabul</span>
+        <span class="chip">AI javob</span><span class="chip">Holat kuzatuvi</span>
+      </div>
+    </div>
+    <div class="grid kpi" id="kpis"></div>
+    <div class="grid two" style="margin-top:14px">
+      <div class="card"><h3>Kategoriyalar bo'yicha</h3><div id="chartCats"></div></div>
+      <div class="card"><h3>Bo'limlar bo'yicha</h3><div id="chartDeps"></div></div>
+    </div>
+  </section>
+
+  <!-- SUBMIT -->
+  <section id="view-submit" class="view">
+    <div class="card">
+      <h3>Yangi murojaat</h3>
+      <p class="muted">Murojaatingiz bo'limga yo'qoriladi va xodimlar tez orada javob beradi.</p>
+      <form id="reqForm">
+        <div class="row">
+          <label>F.I.O.<input name="fio" placeholder="Aziza Karimova" required></label>
+          <label>Telefon<input name="phone" placeholder="+998 __ ___ __ __"></label>
+        </div>
+        <label>Murojaat matni
+          <textarea name="text" rows="6" placeholder="Murojaatingizni yozing..." required></textarea>
+        </label>
+        <label>Kategoriya (ixtiyoriy — avtomatik aniqlanadi)
+          <select name="category" id="catSelect"></select>
+        </label>
+        <button class="primary" type="submit">Yuborish</button>
+        <span id="reqMsg" class="msg"></span>
+      </form>
+    </div>
+  </section>
+
+  <!-- TRACK -->
+  <section id="view-track" class="view">
+    <div class="card">
+      <h3>Mening murojaatlarim</h3>
+      <p class="muted">Telefon raqam kiriting — murojaatlaringiz ro'yxati chiqadi.</p>
+      <div class="toolbar">
+        <input id="trackPhone" placeholder="+998 90 123 45 67">
+        <button class="primary" id="trackBtn">Ko'rsatish</button>
+      </div>
+      <div id="trackList"></div>
+    </div>
+  </section>
+
+  <!-- CHAT -->
+  <section id="view-chat" class="view">
+    <div class="card">
+      <h3>Sun'iy intellekt yordamchisi</h3>
+      <div class="chatbox">
+        <div class="chatlog" id="chatlog">
+          <div class="msg ai"><div class="avatar">AI</div><div class="bubble">Salom! Men FuQorAI. Murojaatingiz bo'yicha qonuniy va amaliy yechim taklif qilaman. Savolingizni yozing.</div></div>
+        </div>
+        <div class="suggest" id="suggests">
+          <button>Uydan issiq suv yo'q, nima qilishim kerak?</button>
+          <button>Nafaqani olish uchun ariza qabul qilinmadi</button>
+          <button>Yo'l teshiklari uchun kimga murojaat qilaman?</button>
+        </div>
+        <div class="composer">
+          <input id="chatInput" placeholder="Savolingizni yozing...">
+          <button id="chatSend">Yuborish</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ADMIN -->
+  <section id="view-admin" class="view">
+    <div class="card" id="adminLoginBox">
+      <h3>Xodimlar paneli</h3>
+      <p class="muted">Kirish uchun admin hisobingiz bilan tizimga kiring.</p>
+      <form id="loginForm">
+        <label>Email<input type="email" name="email" required></label>
+        <label>Parol<input type="password" name="password" required></label>
+        <button class="primary" type="submit">Kirish</button>
+        <span id="loginMsg" class="msg"></span>
+      </form>
+    </div>
+    <div class="card" id="adminBox" style="display:none">
+      <h3>Murojaatlar boshqaruvi <button class="ghost" id="logoutBtn" style="margin-left:auto">Chiqish</button></h3>
+      <div class="toolbar">
+        <input id="admSearch" placeholder="Qidirish (FIO yoki matn)...">
+        <select id="admFilter"><option value="">Barchasi</option></select>
+      </div>
+      <div id="admList"></div>
+    </div>
+  </section>
+</main>
+
+<footer>FuQorAI — demo versiya. Ma'lumotlar Firebase'da saqlanadi.</footer>
+
+<script src="firebase-config.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
