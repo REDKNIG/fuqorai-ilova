@@ -187,7 +187,9 @@ async function notifyTelegram(req) {
 
 /* ---------------- main ---------------- */
 exports.api = onRequest(async (req, res) => {
-  const path = req.path.replace(/^\/+|\/+$/g, "");
+  let path = req.path.replace(/^\/+|\/+$/g, "");
+  // Hosting rewrite /api/** -> function "api": prefiksni olib tashlaymiz
+  path = path.replace(/^api\//, "").replace(/^api$/, "");
   const method = req.method.toUpperCase();
 
   res.set("Access-Control-Allow-Origin", "*");
